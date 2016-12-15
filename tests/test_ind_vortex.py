@@ -21,14 +21,31 @@
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
-# The modules below should/must define __all__ with the Indicator objects
-# of prepend an "_" (underscore) to private classes/variables
+import testcommon
 
-from .broker import *
-from .buysell import *
-from .trades import *
-from .drawdown import *
-from .timereturn import *
-from .benchmark import *
+import backtrader as bt
+import backtrader.indicators as btind
 
-from .logreturns import *
+chkdatas = 1
+chkvals = [
+    ['1.245434', '0.921076', '1.062278'],
+    ['0.707948', '0.966375', '0.803849']
+]
+
+chkmin = 15
+chkind = btind.Vortex
+
+
+def test_run(main=False):
+    datas = [testcommon.getdata(i) for i in range(chkdatas)]
+    testcommon.runtest(datas,
+                       testcommon.TestStrategy,
+                       main=main,
+                       plot=main,
+                       chkind=chkind,
+                       chkmin=chkmin,
+                       chkvals=chkvals)
+
+
+if __name__ == '__main__':
+    test_run(main=True)

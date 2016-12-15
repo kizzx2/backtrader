@@ -183,7 +183,7 @@ class BackBroker(bt.BrokerBase):
 
         - ``coc`` (default: ``False``)
 
-          *Cheat-On-Close*. Setting this to ``True`` with ``set_coc`` enables
+          *Cheat-On-Close* Setting this to ``True`` with ``set_coc`` enables
            matching a ``Market`` order to the closing price of the bar in which
            the order was issued. This is actually *cheating*, because the bar
            is *closed* and any order should first be matched against the prices
@@ -196,6 +196,14 @@ class BackBroker(bt.BrokerBase):
           cases in which this is undesired, because different strategies are
           competing and the interest would be assigned on a non-deterministic
           basis to any of them.
+
+        - ``shortcash`` (default: ``True``)
+
+          If True then cash will be increased when a stocklike asset is shorted
+          and the calculated value for the asset will be negative.
+
+          If ``False`` then the cash will be deducted as operation cost and the
+          calculated value will be positive to end up with the same amount
     '''
     params = (
         ('cash', 10000.0),
@@ -211,11 +219,15 @@ class BackBroker(bt.BrokerBase):
         ('slip_out', False),
         ('coc', False),
         ('int2pnl', True),
+        ('shortcash', True),
     )
 
     def init(self):
         super(BackBroker, self).init()
         self.startingcash = self.cash = self.p.cash
+        self._value = self.cash
+        self._valuemkt = 0.0  # no open position
+        self._unrealized = 0.0  # no open position
 
         self.orders = list()  # will only be appending
         self.pending = collections.deque()  # popleft and append(right)
@@ -241,6 +253,10 @@ class BackBroker(bt.BrokerBase):
     def set_coc(self, coc):
         '''Configure the Cheat-On-Close method to buy the close on order bar'''
         self.p.coc = coc
+
+    def set_shortcash(self, shortcash):
+        '''Configure the shortcash parameters'''
+        self.p.shortcash = shortcash
 
     def set_slippage_perc(self, perc,
                           slip_open=True, slip_limit=True,
@@ -287,6 +303,7 @@ class BackBroker(bt.BrokerBase):
     def set_cash(self, cash):
         '''Sets the cash parameter (alias: ``setcash``)'''
         self.startingcash = self.cash = self.p.cash = cash
+        self._value = cash
 
     setcash = set_cash
 
@@ -301,21 +318,46 @@ class BackBroker(bt.BrokerBase):
         self.notify(order)
         return True
 
-    def get_value(self, datas=None):
+    def get_value(self, datas=None, mkt=False):
         '''Returns the portfolio value of the given datas (if datas is ``None``, then
         the total portfolio value will be returned (alias: ``getvalue``)
         '''
+        if datas is None:
+            if mkt:
+                return self._valuemkt
+
+            return self._value
+
+        return self._get_value(datas=datas)
+
+    def _get_value(self, datas=None):
         pos_value = 0.0
+        unrealized = 0.0
 
         for data in datas or self.positions:
             comminfo = self.getcommissioninfo(data)
             position = self.positions[data]
-            dvalue = comminfo.getvalue(position, data.close[0])
+            # use valuesize:  returns raw value, rather than negative adj val
+            if not self.p.shortcash:
+                dvalue = comminfo.getvalue(position, data.close[0])
+            else:
+                dvalue = comminfo.getvaluesize(position.size, data.close[0])
+
             if datas and len(datas) == 1:
                 return dvalue  # raw data value requested, short selling is neg
-            pos_value += abs(dvalue)  # short selling adds value
 
-        return self.cash + pos_value
+            if not self.p.shortcash:
+                dvalue = abs(dvalue)  # short selling adds value in this case
+
+            pos_value += dvalue
+            unrealized += comminfo.profitandloss(position.size, position.price,
+                                                 data.close[0])
+
+        self._value = self.cash + pos_value
+        self._valuemkt = pos_value
+        self._unrealized = unrealized
+
+        return self._value
 
     getvalue = get_value
 
@@ -448,7 +490,11 @@ class BackBroker(bt.BrokerBase):
         # "Closing" totally or partially is possible. Cash may be re-injected
         if closed:
             # Adjust to returned value for closed items & acquired opened items
-            closedvalue = comminfo.getoperationcost(closed, pprice_orig)
+            if self.p.shortcash:
+                closedvalue = comminfo.getvaluesize(-closed, pprice_orig)
+            else:
+                closedvalue = comminfo.getoperationcost(closed, pprice_orig)
+
             cash += closedvalue + pnl * comminfo.stocklike
             # Calculate and substract commission
             closedcomm = comminfo.getcommission(closed, price)
@@ -468,8 +514,12 @@ class BackBroker(bt.BrokerBase):
 
         popened = opened
         if opened:
-            openedvalue = comminfo.getoperationcost(opened, price)
-            cash -= openedvalue
+            if self.p.shortcash:
+                openedvalue = comminfo.getvaluesize(opened, price)
+            else:
+                openedvalue = comminfo.getoperationcost(opened, price)
+
+            cash -= openedvalue  # original behavior
 
             openedcomm = comminfo.getcommission(opened, price)
             cash -= openedcomm
@@ -787,6 +837,8 @@ class BackBroker(bt.BrokerBase):
                                                  data.close[0])
                 # record the last adjustment price
                 pos.adjbase = data.close[0]
+
+        self._get_value()  # update value
 
 
 # Alias

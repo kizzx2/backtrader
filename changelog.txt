@@ -1,3 +1,31 @@
+1.9.19.105
+  - Add time comparison for single line operations
+  - Correct plotting error calculations with volume and improve data on data
+  - Remove cosmetic comma
+
+1.9.18.105
+  - PR #221 Correct onda candleFormat parameter
+  - Allow data on data plotting and no data plotting
+  - Remove double labeling on indicators
+  - Analyzer LogReturnsRolling
+  - Observer LogReturns
+  - Improved order management of input for validity
+  - Set default end date for online downloads in Yahoo if not set
+  - Gold vs SP500 Sample
+
+1.9.17.105
+  - PR #195 make runstrats iterable to allow callbacks
+  - Fixes #189 by adding callback during optimization
+  - Fixes #205 to avoid errors during unnamed argument usage in strategy
+  - Regression correction for no short-cashing
+
+1.9.16.105:
+  - PR #212 added Vortex indicator
+  - Closed #215 writer opens file in binary mode
+  - Closed #210 missing comma in status definitions lists in feed
+  - PR #203 python3 compatiblity for ib (long)
+  - Added shortcash parameter to broker to control cash increase/decrease
+
 1.9.15.104:
   - PR #202 to fix import in ibdata
   - PR #196, #198 - doc updates

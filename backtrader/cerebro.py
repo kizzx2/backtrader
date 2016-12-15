@@ -241,6 +241,7 @@ class Cerebro(with_metaclass(MetaParams, object)):
         self.datas = list()
         self.datasbyname = collections.OrderedDict()
         self.strats = list()
+        self.optcbs = list()  # holds a list of callbacks for opt strategies
         self.observers = list()
         self.analyzers = list()
         self.indicators = list()
@@ -521,6 +522,15 @@ class Cerebro(with_metaclass(MetaParams, object)):
         self.adddata(dataname, name=name)
         self._doreplay = True
 
+    def optcallback(self, cb):
+        '''
+        Adds a *callback* to the list of callbacks that will be called with the
+        optimizations when each of the strategies has been run
+
+        The signature: cb(strategy)
+        '''
+        self.optcbs.append(cb)
+
     def optstrategy(self, strategy, *args, **kwargs):
         '''
         Adds a ``Strategy`` class to the mix for optimization. Instantiation
@@ -678,6 +688,17 @@ class Cerebro(with_metaclass(MetaParams, object)):
         predata = self.p.optdatas and self._dopreload and self._dorunonce
         return self.runstrategies(iterstrat, predata=predata)
 
+    def __getstate__(self):
+        '''
+        Used during optimization to prevent optimization result `runstrats`
+        from being pickled to subprocesses
+        '''
+
+        rv = vars(self).copy()
+        if 'runstrats' in rv:
+            del(rv['runstrats'])
+        return rv
+
     def runstop(self):
         '''If invoked from inside a strategy or anywhere else, including other
         threads the execution will stop as soon as possible.'''
@@ -798,7 +819,10 @@ class Cerebro(with_metaclass(MetaParams, object)):
                         data.preload()
 
             pool = multiprocessing.Pool(self.p.maxcpus or None)
-            self.runstrats = list(pool.map(self, iterstrats))
+            for r in pool.imap(self, iterstrats):
+                self.runstrats.append(r)
+                for cb in self.optcbs:
+                    cb(r)  # callback receives finished strategy
 
             if self.p.optdatas and self._dopreload and self._dorunonce:
                 for data in self.datas:

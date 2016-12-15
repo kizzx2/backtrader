@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2016 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -21,14 +21,8 @@
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
-# The modules below should/must define __all__ with the Indicator objects
-# of prepend an "_" (underscore) to private classes/variables
+import backtrader as bt
 
-from .broker import *
-from .buysell import *
-from .trades import *
-from .drawdown import *
-from .timereturn import *
-from .benchmark import *
-
-from .logreturns import *
+from .import vortex as vortex
+for name in vortex.__all__:
+    setattr(bt.indicators, name, getattr(vortex, name))
