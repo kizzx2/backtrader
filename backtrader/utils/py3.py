@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -55,7 +55,7 @@ if PY2:
 
     from io import StringIO
 
-    from urllib2 import urlopen
+    from urllib2 import urlopen, ProxyHandler, build_opener, install_opener
     from urllib import quote as urlquote
 
     def iterkeys(d): return d.iterkeys()
@@ -101,7 +101,8 @@ else:
 
     from io import StringIO
 
-    from urllib.request import urlopen
+    from urllib.request import (urlopen, ProxyHandler, build_opener,
+                                install_opener)
     from urllib.parse import quote as urlquote
 
     def iterkeys(d): return iter(d.keys())

@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -93,6 +93,15 @@ class SharpeRatio(Analyzer):
         Use the ``AnnualReturn`` return analyzer, which as the name implies
         only works on years
 
+      - ``fund`` (default: ``None``)
+
+        If ``None`` the actual mode of the broker (fundmode - True/False) will
+        be autodetected to decide if the returns are based on the total net
+        asset value or on the fund value. See ``set_fundmode`` in the broker
+        documentation
+
+        Set it to ``True`` or ``False`` for a specific behavior
+
     Methods:
 
       - get_analysis
@@ -112,6 +121,7 @@ class SharpeRatio(Analyzer):
         # old behavior
         ('daysfactor', None),
         ('legacyannual', False),
+        ('fund', None),
     )
 
     RATEFACTORS = {
@@ -127,7 +137,8 @@ class SharpeRatio(Analyzer):
         else:
             self.timereturn = TimeReturn(
                 timeframe=self.p.timeframe,
-                compression=self.p.compression)
+                compression=self.p.compression,
+                fund=self.p.fund)
 
     def stop(self):
         super(SharpeRatio, self).stop()
@@ -168,20 +179,26 @@ class SharpeRatio(Analyzer):
                     # Else upgrade returns to yearly returns
                     returns = [pow(1.0 + x, factor) - 1.0 for x in returns]
 
-            # Get the excess returns - arithmetic mean - original sharpe
-            ret_free = [r - rate for r in returns]
-            ret_free_avg = average(ret_free)
-            retdev = standarddev(ret_free, avgx=ret_free_avg,
-                                 bessel=self.p.stddev_sample)
+            lrets = len(returns) - self.p.stddev_sample
+            # Check if the ratio can be calculated
+            if lrets:
+                # Get the excess returns - arithmetic mean - original sharpe
+                ret_free = [r - rate for r in returns]
+                ret_free_avg = average(ret_free)
+                retdev = standarddev(ret_free, avgx=ret_free_avg,
+                                     bessel=self.p.stddev_sample)
 
-            try:
-                ratio = ret_free_avg / retdev
+                try:
+                    ratio = ret_free_avg / retdev
 
-                if factor is not None and \
-                   self.p.convertrate and self.p.annualize:
+                    if factor is not None and \
+                       self.p.convertrate and self.p.annualize:
 
-                    ratio = math.sqrt(factor) * ratio
-            except (ValueError, TypeError):
+                        ratio = math.sqrt(factor) * ratio
+                except (ValueError, TypeError, ZeroDivisionError):
+                    ratio = None
+            else:
+                # no returns or stddev_sample was active and 1 return
                 ratio = None
 
             self.ratio = ratio

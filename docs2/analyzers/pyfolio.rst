@@ -1,6 +1,15 @@
 PyFolio Overview
 ################
 
+.. note::
+
+   As of (at least) 2017-07-25 the ``pyfolio`` APIs have changed and
+   ``create_full_tear_sheet`` no longer has a ``gross_lev`` as a named
+   argument.
+
+   Consequently the sample for integration doesn't work
+
+
 Quoting from the main ``pyfolio`` page at http://quantopian.github.io/pyfolio/::
 
   pyfolio is a Python library for performance and risk analysis of financial
@@ -76,7 +85,7 @@ The code would look like this::
   ...
   ...
   # pyfolio showtime
-  import pyfolio
+  import pyfolio as pf
   pf.create_full_tear_sheet(
       returns,
       positions=positions,

@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -41,6 +41,16 @@ class CommInfoBase(with_metaclass(MetaParams)):
       - ``margin`` (def: ``None``): amount of monetary units needed to
         open/hold an operation. It only applies if the final ``_stocklike``
         attribute in the class is set to ``False``
+
+      - ``automargin`` (def: ``False``): Used by the method ``get_margin``
+        to automatically calculate the margin/guarantees needed with the
+        following policy
+
+          - Use param ``margin`` if param ``automargin`` evaluates to ``False``
+
+          - Use param ``mult`` * ``price`` if ``automargin < 0``
+
+          - Use param ``automargin`` * ``price`` if ``automargin > 0``
 
       - ``commtype`` (def: ``None``): Supported values are
         ``CommInfoBase.COMM_PERC`` (commission to be understood as %) and
@@ -92,6 +102,10 @@ class CommInfoBase(with_metaclass(MetaParams)):
         positions. If ths is ``True`` and ``interest`` is non-zero the interest
         will be charged on both directions
 
+      - ``leverage`` (def: ``1.0``)
+
+        Amount of leverage for the asset with regards to the needed cash
+
     Attributes:
 
       - ``_stocklike``: Final value to use for Stock-like/Futures-like behavior
@@ -112,6 +126,8 @@ class CommInfoBase(with_metaclass(MetaParams)):
         ('percabs', False),
         ('interest', 0.0),
         ('interest_long', False),
+        ('leverage', 1.0),
+        ('automargin', False),
     )
 
     def __init__(self):
@@ -150,17 +166,40 @@ class CommInfoBase(with_metaclass(MetaParams)):
     def stocklike(self):
         return self._stocklike
 
+    def get_margin(self, price):
+        '''Returns the actual margin/guarantees needed for a single item of the
+        asset at the given price. The default implementation has this policy:
+
+          - Use param ``margin`` if param ``automargin`` evaluates to ``False``
+
+          - Use param ``mult`` * ``price`` if ``automargin < 0``
+
+          - Use param ``automargin`` * ``price`` if ``automargin > 0``
+        '''
+        if not self.p.automargin:
+            return self.p.margin
+
+        elif self.p.automargin < 0:
+            return price * self.p.mult
+
+        return price * self.p.automargin  # int/float expected
+
+    def get_leverage(self):
+
+        '''Returns the level of leverage allowed for this comission scheme'''
+        return self.p.leverage
+
     def getsize(self, price, cash):
         '''Returns the needed size to meet a cash operation at a given price'''
         if not self._stocklike:
-            return cash // self.p.margin
+            return int(self.p.leverage * (cash // self.get_margin(price)))
 
-        return cash // price
+        return int(self.p.leverage * (cash // price))
 
     def getoperationcost(self, size, price):
         '''Returns the needed amount of cash an operation would cost'''
         if not self._stocklike:
-            return abs(size) * self.p.margin
+            return abs(size) * self.get_margin(price)
 
         return abs(size) * price
 
@@ -168,7 +207,7 @@ class CommInfoBase(with_metaclass(MetaParams)):
         '''Returns the value of size for given a price. For future-like
         objects it is fixed at size * margin'''
         if not self._stocklike:
-            return abs(size) * self.p.margin
+            return abs(size) * self.get_margin(price)
 
         return size * price
 
@@ -176,7 +215,7 @@ class CommInfoBase(with_metaclass(MetaParams)):
         '''Returns the value of a position given a price. For future-like
         objects it is fixed at size * margin'''
         if not self._stocklike:
-            return abs(position.size) * self.p.margin
+            return abs(position.size) * self.get_margin(price)
 
         size = position.size
         if size >= 0:
@@ -198,6 +237,8 @@ class CommInfoBase(with_metaclass(MetaParams)):
         return abs(size) * self.p.commission
 
     def getcommission(self, size, price):
+        '''Calculates the commission of an operation at a given price
+        '''
         return self._getcommission(size, price, pseudoexec=True)
 
     def confirmexec(self, size, price):

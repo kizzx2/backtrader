@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -23,6 +23,7 @@ from __future__ import (absolute_import, division, print_function,
 
 import bisect
 import collections
+import datetime
 import itertools
 import math
 import operator
@@ -35,8 +36,8 @@ import matplotlib.font_manager as mfontmgr
 import matplotlib.legend as mlegend
 import matplotlib.ticker as mticker
 
-from ..utils.py3 import range, with_metaclass
-from .. import AutoInfoClass, MetaParams, TimeFrame
+from ..utils.py3 import range, with_metaclass, string_types, integer_types
+from .. import AutoInfoClass, MetaParams, TimeFrame, date2num
 
 from .finance import plot_candlestick, plot_ohlc, plot_volume, plot_lineonclose
 from .formatters import (MyVolFormatter, MyDateFormatter, getlocator)
@@ -63,6 +64,7 @@ class PInfo(object):
         self.coloridx = collections.defaultdict(lambda: -1)
         self.handles = collections.defaultdict(list)
         self.labels = collections.defaultdict(list)
+        self.legpos = collections.defaultdict(int)
 
         self.prop = mfontmgr.FontProperties(size=self.sch.subtxtsize)
 
@@ -111,7 +113,8 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
                       zorder=self.pinf.zorder[ax] + 3.0,
                       **kwargs)
 
-    def plot(self, strategy, figid=0, numfigs=1, iplot=True, useplotly=False):
+    def plot(self, strategy, figid=0, numfigs=1, iplot=True,
+             start=None, end=None, use=None, **kwargs):
         # pfillers={}):
         if not strategy.datas:
             return
@@ -119,7 +122,9 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
         if not len(strategy):
             return
 
-        if iplot:
+        if use is not None:
+            matplotlib.use(use)
+        elif iplot:
             if 'ipykernel' in sys.modules:
                 matplotlib.use('nbagg')
 
@@ -131,11 +136,26 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
         self.sortdataindicators(strategy)
         self.calcrows(strategy)
 
-        slen = len(strategy)
+        st_dtime = strategy.lines.datetime.plot()
+        if start is None:
+            start = 0
+        if end is None:
+            end = len(st_dtime)
+
+        if isinstance(start, datetime.date):
+            start = bisect.bisect_left(st_dtime, date2num(start))
+
+        if isinstance(end, datetime.date):
+            end = bisect.bisect_right(st_dtime, date2num(end))
+
+        if end < 0:
+            end = len(st_dtime) + 1 + end  # -1 =  len() -2 = len() - 1
+
+        slen = len(st_dtime[start:end])
         d, m = divmod(slen, numfigs)
         pranges = list()
         for i in range(numfigs):
-            a = d * i
+            a = d * i + start
             if i == (numfigs - 1):
                 d += m  # add remainder to last stint
             b = a + d
@@ -173,14 +193,23 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
             # Create the rest on a per data basis
             dt0, dt1 = self.pinf.xreal[0], self.pinf.xreal[-1]
             for data in strategy.datas:
+                if not data.plotinfo.plot:
+                    continue
+
                 self.pinf.xdata = self.pinf.x
-                if len(data) < self.pinf.xlen:
+                xd = data.datetime.plotrange(self.pinf.xstart, self.pinf.xend)
+                if len(xd) < self.pinf.xlen:
                     self.pinf.xdata = xdata = []
                     xreal = self.pinf.xreal
                     dts = data.datetime.plot()
+                    xtemp = list()
                     for dt in (x for x in dts if dt0 <= x <= dt1):
                         dtidx = bisect.bisect_left(xreal, dt)
                         xdata.append(dtidx)
+                        xtemp.append(dt)
+
+                    self.pinf.xstart = bisect.bisect_left(dts, xtemp[0])
+                    self.pinf.xend = bisect.bisect_right(dts, xtemp[-1])
 
                 for ind in self.dplotsup[data]:
                     self.plotind(
@@ -296,15 +325,19 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
                 self.dplotsdown.pop(data, None)
                 self.dplotsover.pop(data, None)
 
-            elif data.plotinfo.plotmaster is not None:
-                # data doesn't add a row, but volume may
-                if self.pinf.sch.volume:
-                    nrows += rowsminor
             else:
-                # data adds rows, volume may
-                nrows += rowsmajor
-                if self.pinf.sch.volume and not self.pinf.sch.voloverlay:
-                    nrows += rowsminor
+                pmaster = data.plotinfo.plotmaster
+                if pmaster is data:
+                    pmaster = None
+                if pmaster is not None:
+                    # data doesn't add a row, but volume may
+                    if self.pinf.sch.volume:
+                        nrows += rowsminor
+                else:
+                    # data adds rows, volume may
+                    nrows += rowsmajor
+                    if self.pinf.sch.volume and not self.pinf.sch.voloverlay:
+                        nrows += rowsminor
 
         if False:
             # Datas and volumes
@@ -386,8 +419,11 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
             # plot data
             lplot = line.plotrange(self.pinf.xstart, self.pinf.xend)
 
-            if not math.isnan(lplot[-1]):
-                label += ' %.2f' % lplot[-1]
+            # Global and generic for indicator
+            if self.pinf.sch.linevalues and ind.plotinfo.plotlinevalues:
+                plotlinevalue = lineplotinfo._get('_plotvalue', True)
+                if plotlinevalue and not math.isnan(lplot[-1]):
+                    label += ' %.2f' % lplot[-1]
 
             plotkwargs = dict()
             linekwargs = lineplotinfo._getkwargs(skip_=True)
@@ -413,11 +449,14 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
 
             self.pinf.zorder[ax] = plottedline.get_zorder()
 
-            if not math.isnan(lplot[-1]):
-                # line has valid values, plot a tag for the last value
-                self.drawtag(ax, len(self.pinf.xreal), lplot[-1],
-                             facecolor='white',
-                             edgecolor=self.pinf.color(ax))
+            vtags = lineplotinfo._get('plotvaluetags', True)
+            if self.pinf.sch.valuetags and vtags:
+                linetag = lineplotinfo._get('_plotvaluetag', True)
+                if linetag and not math.isnan(lplot[-1]):
+                    # line has valid values, plot a tag for the last value
+                    self.drawtag(ax, len(self.pinf.xreal), lplot[-1],
+                                 facecolor='white',
+                                 edgecolor=self.pinf.color(ax))
 
             farts = (('_gt', operator.gt), ('_lt', operator.lt), ('', None),)
             for fcmp, fop in farts:
@@ -425,16 +464,23 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
                 fref, fcol = lineplotinfo._get(fattr, (None, None))
                 if fref is not None:
                     y1 = np.array(lplot)
-                    l2 = getattr(ind, fref)
-                    prl2 = l2.plotrange(self.pinf.xstart, self.pinf.xend)
-                    y2 = np.array(prl2)
+                    if isinstance(fref, integer_types):
+                        y2 = np.full_like(y1, fref)
+                    else:  # string, naming a line, nothing else is supported
+                        l2 = getattr(ind, fref)
+                        prl2 = l2.plotrange(self.pinf.xstart, self.pinf.xend)
+                        y2 = np.array(prl2)
                     kwargs = dict()
                     if fop is not None:
                         kwargs['where'] = fop(y1, y2)
 
+                    falpha = self.pinf.sch.fillalpha
+                    if isinstance(fcol, (list, tuple)):
+                        fcol, falpha = fcol
+
                     ax.fill_between(self.pinf.xdata, y1, y2,
                                     facecolor=fcol,
-                                    alpha=0.20,
+                                    alpha=falpha,
                                     interpolate=True,
                                     **kwargs)
 
@@ -476,8 +522,11 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
                 handles, labels = ax.get_legend_handles_labels()
                 # Ensure that we have something to show
                 if labels:
+                    # location can come from the user
+                    loc = ind.plotinfo.legendloc or self.pinf.sch.legendindloc
+
                     # Legend done here to ensure it includes all plots
-                    legend = ax.legend(loc=self.pinf.sch.legendindloc,
+                    legend = ax.legend(loc=loc,
                                        numpoints=1, frameon=False,
                                        shadow=False, fancybox=False,
                                        prop=self.pinf.prop)
@@ -492,8 +541,10 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
             self.plotind(iref, downind)
 
     def plotvolume(self, data, opens, highs, lows, closes, volumes, label):
-        voloverlay = (self.pinf.sch.voloverlay and
-                      data.plotinfo.plotmaster is None)
+        pmaster = data.plotinfo.plotmaster
+        if pmaster is data:
+            pmaster = None
+        voloverlay = (self.pinf.sch.voloverlay and pmaster is None)
 
         # if sefl.pinf.sch.voloverlay:
         if voloverlay:
@@ -533,8 +584,12 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
                 # plot a legend
                 handles, labels = ax.get_legend_handles_labels()
                 if handles:
+
+                    # location can come from the user
+                    loc = data.plotinfo.legendloc or self.pinf.sch.legendindloc
+
                     # Legend done here to ensure it includes all plots
-                    legend = ax.legend(loc=self.pinf.sch.legendindloc,
+                    legend = ax.legend(loc=loc,
                                        numpoints=1, frameon=False,
                                        shadow=False, fancybox=False,
                                        prop=self.pinf.prop)
@@ -565,8 +620,11 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
         volumes = data.volume.plotrange(self.pinf.xstart, self.pinf.xend)
 
         vollabel = 'Volume'
-        voloverlay = (self.pinf.sch.voloverlay and
-                      data.plotinfo.plotmaster is None)
+        pmaster = data.plotinfo.plotmaster
+        if pmaster is data:
+            pmaster = None
+
+        voloverlay = (self.pinf.sch.voloverlay and pmaster is None)
 
         if not voloverlay:
             vollabel += ' ({})'.format(data._dataname)
@@ -581,10 +639,13 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
             self.pinf.daxis[data] = ax
             self.pinf.vaxis.append(ax)
         else:
-            if data.plotinfo.plotmaster is None:
+            if pmaster is None:
                 ax = self.newaxis(data, rowspan=self.pinf.sch.rowsmajor)
+            elif getattr(data.plotinfo, 'sameaxis', False):
+                axdatamaster = self.pinf.daxis[pmaster]
+                ax = axdatamaster
             else:
-                axdatamaster = self.pinf.daxis[data.plotinfo.plotmaster]
+                axdatamaster = self.pinf.daxis[pmaster]
                 ax = axdatamaster.twinx()
                 self.pinf.vaxis.append(ax)
 
@@ -598,10 +659,11 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
             tfname = TimeFrame.getname(data._timeframe, data._compression)
             datalabel += ' (%d %s)' % (data._compression, tfname)
 
-        datalabel += ' O:%.2f H:%2.f L:%.2f C:%.2f' % \
-                     (opens[-1], highs[-1], lows[-1], closes[-1])
-
+        plinevalues = getattr(data.plotinfo, 'plotlinevalues', True)
         if self.pinf.sch.style.startswith('line'):
+            if self.pinf.sch.linevalues and plinevalues:
+                datalabel += ' C:%.2f' % closes[-1]
+
             if axdatamaster is None:
                 color = self.pinf.sch.loc
             else:
@@ -612,6 +674,9 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
                 ax, self.pinf.xdata, closes,
                 color=color, label=datalabel)
         else:
+            if self.pinf.sch.linevalues and plinevalues:
+                datalabel += ' O:%.2f H:%.2f L:%.2f C:%.2f' % \
+                             (opens[-1], highs[-1], lows[-1], closes[-1])
             if self.pinf.sch.style.startswith('candle'):
                 plotted = plot_candlestick(
                     ax, self.pinf.xdata, opens, highs, lows, closes,
@@ -632,12 +697,16 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
         self.pinf.zorder[ax] = plotted[0].get_zorder()
 
         # Code to place a label at the right hand side with the last value
-        self.drawtag(ax, len(self.pinf.xreal), closes[-1],
-                     facecolor='white', edgecolor=self.pinf.sch.loc)
+        vtags = data.plotinfo._get('plotvaluetags', True)
+        if self.pinf.sch.valuetags and vtags:
+            self.drawtag(ax, len(self.pinf.xreal), closes[-1],
+                         facecolor='white', edgecolor=self.pinf.sch.loc)
 
         ax.yaxis.set_major_locator(mticker.MaxNLocator(prune='both'))
         # make sure "over" indicators do not change our scale
-        ax.set_ylim(ax.get_ylim())
+        if data.plotinfo._get('plotylimited', True):
+            if axdatamaster is None:
+                ax.set_ylim(ax.get_ylim())
 
         if self.pinf.sch.volume:
             # if not self.pinf.sch.voloverlay:
@@ -656,34 +725,40 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
             self.plotind(data, ind, subinds=self.dplotsover[ind], masterax=ax)
 
         handles, labels = ax.get_legend_handles_labels()
+        a = axdatamaster or ax
         if handles:
             # put data and volume legend entries in the 1st positions
             # because they are "collections" they are considered after Line2D
             # for the legend entries, which is not our desire
             # if self.pinf.sch.volume and self.pinf.sch.voloverlay:
+
+            ai = self.pinf.legpos[a]
             if self.pinf.sch.volume and voloverlay:
                 if volplot:
                     # even if volume plot was requested, there may be no volume
-                    labels.insert(0, vollabel)
-                    handles.insert(0, volplot)
+                    labels.insert(ai, vollabel)
+                    handles.insert(ai, volplot)
 
             didx = labels.index(datalabel)
-            labels.insert(0, labels.pop(didx))
-            handles.insert(0, handles.pop(didx))
+            labels.insert(ai, labels.pop(didx))
+            handles.insert(ai, handles.pop(didx))
 
             if axdatamaster is None:
                 self.pinf.handles[ax] = handles
                 self.pinf.labels[ax] = labels
             else:
-                self.pinf.handles[axdatamaster].extend(handles)
-                self.pinf.labels[axdatamaster].extend(labels)
+                self.pinf.handles[axdatamaster] = handles
+                self.pinf.labels[axdatamaster] = labels
+                # self.pinf.handles[axdatamaster].extend(handles)
+                # self.pinf.labels[axdatamaster].extend(labels)
 
-            h = self.pinf.handles[axdatamaster or ax]
-            l = self.pinf.labels[axdatamaster or ax]
+            h = self.pinf.handles[a]
+            l = self.pinf.labels[a]
 
-            axlegend = axdatamaster or ax
+            axlegend = a
+            loc = data.plotinfo.legendloc or self.pinf.sch.legenddataloc
             legend = axlegend.legend(h, l,
-                                     loc='upper left',
+                                     loc=loc,
                                      frameon=False, shadow=False,
                                      fancybox=False, prop=self.pinf.prop,
                                      numpoints=1, ncol=1)
@@ -700,8 +775,19 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
                              upinds=self.dplotsup[downind],
                              downinds=self.dplotsdown[downind])
 
+        self.pinf.legpos[a] = len(self.pinf.handles[a])
+
+        if data.plotinfo._get('plotlog', False):
+            a = axdatamaster or ax
+            a.set_yscale('log')
+
     def show(self):
         self.mpyplot.show()
+
+    def savefig(self, fig, filename, width=16, height=9, dpi=300, tight=True):
+        fig.set_size_inches(width, height)
+        bbox_inches = 'tight' * tight or None
+        fig.savefig(filename, dpi=dpi, bbox_inches=bbox_inches)
 
     def sortdataindicators(self, strategy):
         # These lists/dictionaries hold the subplots that go above each data
@@ -746,10 +832,13 @@ class Plot_OldSync(with_metaclass(MetaParams, object)):
                         else:
                             break
 
-            if x.plotinfo.plotmaster is not None:
-                key = x.plotinfo.plotmaster
+            xpmaster = x.plotinfo.plotmaster
+            if xpmaster is x:
+                xpmaster = None
+            if xpmaster is not None:
+                key = xpmaster
 
-            if x.plotinfo.subplot and x.plotinfo.plotmaster is None:
+            if x.plotinfo.subplot and xpmaster is None:
                 if x.plotinfo.plotabove:
                     self.dplotsup[key].append(x)
                 else:

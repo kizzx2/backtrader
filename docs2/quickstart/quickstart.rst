@@ -217,25 +217,25 @@ Let's try some crazy idea we had by looking at some charts
 After the execution the output is::
 
   Starting Portfolio Value: 100000.00
-  2000-01-03T00:00:00, Close, 27.85
-  2000-01-04T00:00:00, Close, 25.39
-  2000-01-05T00:00:00, Close, 24.05
-  2000-01-05T00:00:00, BUY CREATE, 24.05
-  2000-01-06T00:00:00, Close, 22.63
-  2000-01-06T00:00:00, BUY CREATE, 22.63
-  2000-01-07T00:00:00, Close, 24.37
+  2000-01-03, Close, 27.85
+  2000-01-04, Close, 25.39
+  2000-01-05, Close, 24.05
+  2000-01-05, BUY CREATE, 24.05
+  2000-01-06, Close, 22.63
+  2000-01-06, BUY CREATE, 22.63
+  2000-01-07, Close, 24.37
   ...
   ...
   ...
-  2000-12-20T00:00:00, BUY CREATE, 26.88
-  2000-12-21T00:00:00, Close, 27.82
-  2000-12-22T00:00:00, Close, 30.06
-  2000-12-26T00:00:00, Close, 29.17
-  2000-12-27T00:00:00, Close, 28.94
-  2000-12-27T00:00:00, BUY CREATE, 28.94
-  2000-12-28T00:00:00, Close, 29.29
-  2000-12-29T00:00:00, Close, 27.41
-  Final Portfolio Value: 95823.62
+  2000-12-20, BUY CREATE, 26.88
+  2000-12-21, Close, 27.82
+  2000-12-22, Close, 30.06
+  2000-12-26, Close, 29.17
+  2000-12-27, Close, 28.94
+  2000-12-27, BUY CREATE, 28.94
+  2000-12-28, Close, 29.29
+  2000-12-29, Close, 27.41
+  Final Portfolio Value: 99725.08
 
 Several "BUY" creation orders were issued, our porftolio value was
 decremented. A couple of important things are clearly missing.
@@ -340,7 +340,7 @@ Blistering Barnacles!!! The system made money ... something must be wrong
 The broker says: Show me the money!
 ===================================
 
-And the money is called "comission".
+And the money is called "commission".
 
 Let's add a reasonable *0.1%* commision rate per operation (both for buying and
 selling ... yes the broker is avid ...)
@@ -650,7 +650,7 @@ not the universal panacea.
 	  values everything seems the same, but it's obvious that sometimes
 	  that 5th place decimal plays a role.
 
-	  Rounding down to 2 decimals seems more realistic, because Marke
+	  Rounding down to 2 decimals seems more realistic, because Market
 	  Exchanges do only allow a number of decimals per asset (being that 2
 	  decimals usually for stocks)
 
@@ -810,7 +810,7 @@ will be output::
 
 Results:
 
-  * For periods below 18 the strategy (comissionless) loses money.
+  * For periods below 18 the strategy (commissionless) loses money.
   * For periods between 18 and 26 (both included) the strategy makes money.
   * Above 26 money is lost agagin.
 

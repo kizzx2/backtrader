@@ -44,6 +44,7 @@ class TestStrategy(bt.Strategy):
         cancel=0,
         donotcounter=False,
         sell=False,
+        usebracket=False,
     )
 
     def __init__(self):
@@ -128,20 +129,31 @@ class TestStrategy(bt.Strategy):
             return
 
         if self.datastatus and not self.position and len(self.orderid) < 1:
-            if not self.p.sell:
-                # price = round(self.data0.close[0] * 0.90, 2)
-                price = self.data0.close[0] - 0.005
-                self.order = self.buy(size=self.p.stake,
-                                      exectype=self.p.exectype,
-                                      price=price,
-                                      valid=self.p.valid)
+            if not self.p.usebracket:
+                if not self.p.sell:
+                    # price = round(self.data0.close[0] * 0.90, 2)
+                    price = self.data0.close[0] - 0.005
+                    self.order = self.buy(size=self.p.stake,
+                                          exectype=self.p.exectype,
+                                          price=price,
+                                          valid=self.p.valid)
+                else:
+                    # price = round(self.data0.close[0] * 1.10, 4)
+                    price = self.data0.close[0] - 0.05
+                    self.order = self.sell(size=self.p.stake,
+                                           exectype=self.p.exectype,
+                                           price=price,
+                                           valid=self.p.valid)
+
             else:
-                # price = round(self.data0.close[0] * 1.10, 4)
+                print('USING BRACKET')
                 price = self.data0.close[0] - 0.05
-                self.order = self.sell(size=self.p.stake,
-                                       exectype=self.p.exectype,
-                                       price=price,
-                                       valid=self.p.valid)
+                self.order, _, _ = self.buy_bracket(size=self.p.stake,
+                                                    exectype=bt.Order.Market,
+                                                    price=price,
+                                                    stopprice=price - 0.10,
+                                                    limitprice=price + 0.10,
+                                                    valid=self.p.valid)
 
             self.orderid.append(self.order)
         elif self.position and not self.p.donotcounter:
@@ -257,20 +269,20 @@ def runstrategy():
     )
 
     if args.replay:
-        cerebro.replaydata(dataname=data0, **rekwargs)
+        cerebro.replaydata(data0, **rekwargs)
 
         if data1 is not None:
             rekwargs['timeframe'] = tf1
             rekwargs['compression'] = cp1
-            cerebro.replaydata(dataname=data1, **rekwargs)
+            cerebro.replaydata(data1, **rekwargs)
 
     elif args.resample:
-        cerebro.resampledata(dataname=data0, **rekwargs)
+        cerebro.resampledata(data0, **rekwargs)
 
         if data1 is not None:
             rekwargs['timeframe'] = tf1
             rekwargs['compression'] = cp1
-            cerebro.resampledata(dataname=data1, **rekwargs)
+            cerebro.resampledata(data1, **rekwargs)
 
     else:
         cerebro.adddata(data0)
@@ -291,7 +303,8 @@ def runstrategy():
                         valid=valid,
                         cancel=args.cancel,
                         donotcounter=args.donotcounter,
-                        sell=args.sell)
+                        sell=args.sell,
+                        usebracket=args.usebracket)
 
     # Live data ... avoid long data accumulation by switching to "exactbars"
     cerebro.run(exactbars=args.exactbars)
@@ -394,7 +407,7 @@ def parse_args(pargs=None):
                         required=False, action='store_true',
                         help='resample to chosen timeframe')
 
-    parser.add_argument('--timeframe', default=bt.TimeFrame.Names[0],
+    parser.add_argument('--timeframe', default=bt.TimeFrame.Names[1],
                         choices=bt.TimeFrame.Names,
                         required=False, action='store',
                         help='TimeFrame for Resample/Replay')
@@ -439,6 +452,10 @@ def parse_args(pargs=None):
     parser.add_argument('--sell',
                         required=False, action='store_true',
                         help='Start by selling')
+
+    parser.add_argument('--usebracket',
+                        required=False, action='store_true',
+                        help='Test buy_bracket')
 
     parser.add_argument('--donotcounter',
                         required=False, action='store_true',

@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@ import operator
 import sys
 
 from .utils.py3 import map, range, zip, with_metaclass, string_types
+from .utils import DotDict
 
 from .lineroot import LineRoot, LineSingle
 from .linebuffer import LineActions, LineNum
@@ -67,9 +68,9 @@ class MetaLineIterator(LineSeries.__class__):
         newargs = args[lastarg:]
 
         # If no datas have been passed to an indicator ... use the
-        # main data of the owner, easing up adding "self.data" ...
+        # main datas of the owner, easing up adding "self.data" ...
         if not _obj.datas and isinstance(_obj, (IndicatorBase, ObserverBase)):
-            _obj.datas = [_obj._owner.datas[0]]
+            _obj.datas = _obj._owner.datas[0:mindatas]
 
         # For each found data add access member -
         # for the first data 2 (data and data0)
@@ -92,6 +93,9 @@ class MetaLineIterator(LineSeries.__class__):
                     setattr(_obj, 'data%d_%d' % (d, l), line)
 
         # Parameter values have now been set before __init__
+        _obj.dnames = DotDict([(d._name, d)
+                               for d in _obj.datas if getattr(d, '_name', '')])
+
         return _obj, newargs, kwargs
 
     def dopreinit(cls, _obj, *args, **kwargs):
@@ -137,6 +141,8 @@ class MetaLineIterator(LineSeries.__class__):
 
 
 class LineIterator(with_metaclass(MetaLineIterator, LineSeries)):
+    _nextforce = False  # force cerebro to run in next mode (runonce=False)
+
     _mindatas = 1
     _ltype = LineSeries.IndType
 
@@ -146,6 +152,8 @@ class LineIterator(with_metaclass(MetaLineIterator, LineSeries)):
                     plotskip=False,
                     plotabove=False,
                     plotlinelabels=False,
+                    plotlinevalues=True,
+                    plotvaluetags=True,
                     plotymargin=0.0,
                     plotyhlines=[],
                     plotyticks=[],
@@ -196,6 +204,17 @@ class LineIterator(with_metaclass(MetaLineIterator, LineSeries)):
         # store in right queue
         self._lineiterators[indicator._ltype].append(indicator)
 
+        # use getattr because line buffers don't have this attribute
+        if getattr(indicator, '_nextforce', False):
+            # the indicator needs runonce=False
+            o = self
+            while o is not None:
+                if o._ltype == LineIterator.StratType:
+                    o.cerebro._disable_runonce()
+                    break
+
+                o = o._owner  # move up the hierarchy
+
     def bindlines(self, owner=None, own=None):
         if not owner:
             owner = 0
@@ -242,8 +261,7 @@ class LineIterator(with_metaclass(MetaLineIterator, LineSeries)):
 
         if self._ltype == LineIterator.StratType:
             # supporting datas with different lengths
-            dlens = map(operator.sub, self._minperiods, map(len, self.datas))
-            minperstatus = max(dlens)
+            minperstatus = self._getminperstatus()
             if minperstatus < 0:
                 self.next()
             elif minperstatus == 0:
@@ -443,7 +461,21 @@ def LinesCoupler(cdata, clock=None, **kwargs):
     obj = ncls(cdata, **kwargs)  # instantiate
     # The clock is set here to avoid it being interpreted as a data by the
     # LineIterator background scanning code
-    obj._clock = clock or obj._owner
+    if clock is None:
+        clock = getattr(cdata, '_clock', None)
+        if clock is not None:
+            nclock = getattr(clock, '_clock', None)
+            if nclock is not None:
+                clock = nclock
+            else:
+                nclock = getattr(clock, 'data', None)
+                if nclock is not None:
+                    clock = nclock
+
+        if clock is None:
+            clock = obj._owner
+
+    obj._clock = clock
     return obj
 
 

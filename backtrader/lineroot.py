@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -234,6 +234,18 @@ class LineRoot(with_metaclass(MetaLineRoot, object)):
 
     def __rmul__(self, other):
         return self._roperation(other, operator.__mul__)
+
+    def __div__(self, other):
+        return self._operation(other, operator.__div__)
+
+    def __rdiv__(self, other):
+        return self._roperation(other, operator.__div__)
+
+    def __floordiv__(self, other):
+        return self._operation(other, operator.__floordiv__)
+
+    def __rfloordiv__(self, other):
+        return self._roperation(other, operator.__floordiv__)
 
     def __truediv__(self, other):
         return self._operation(other, operator.__truediv__)

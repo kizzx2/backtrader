@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -266,7 +266,7 @@ class Trade(object):
         self.barlen = len(self.data) - self.baropen
 
         # record if the position was closed (set to null)
-        self.isclosed = oldsize and not self.size
+        self.isclosed = bool(oldsize and not self.size)
 
         # record last bar for the trade
         if self.isclosed:

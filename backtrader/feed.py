@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -31,9 +31,11 @@ import backtrader as bt
 from backtrader import (date2num, num2date, time2num, TimeFrame, dataseries,
                         metabase)
 
-from backtrader.utils.py3 import with_metaclass, zip, range
+from backtrader.utils.py3 import with_metaclass, zip, range, string_types
+from backtrader.utils import tzparse
 from .dataseries import SimpleFilterWrapper
 from .resamplerfilter import Resampler, Replayer
+from .tradingcal import PandasMarketCalendar
 
 
 class MetaAbstractDataBase(dataseries.OHLCDateTime.__class__):
@@ -60,13 +62,17 @@ class MetaAbstractDataBase(dataseries.OHLCDateTime.__class__):
         _obj.notifs = collections.deque()  # store notifications for cerebro
 
         _obj._dataname = _obj.p.dataname
+        _obj._name = ''
         return _obj, args, kwargs
 
     def dopostinit(cls, _obj, *args, **kwargs):
         _obj, args, kwargs = \
             super(MetaAbstractDataBase, cls).dopostinit(_obj, *args, **kwargs)
 
-        _obj._name = _obj.p.name
+        # Either set by subclass or the parameter or use the dataname (ticker)
+        _obj._name = _obj._name or _obj.p.name
+        if not _obj._name and isinstance(_obj.p.dataname, string_types):
+            _obj._name = _obj.p.dataname
         _obj._compression = _obj.p.compression
         _obj._timeframe = _obj.p.timeframe
 
@@ -128,6 +134,8 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
         ('filters', []),
         ('tz', None),
         ('tzinput', None),
+        ('qcheck', 0.0),  # timeout in seconds (float) to check for events
+        ('calendar', None),
     )
 
     (CONNECTED, DISCONNECTED, CONNBROKEN, DELAYED,
@@ -141,8 +149,12 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
     def _getstatusname(cls, status):
         return cls._NOTIFNAMES[status]
 
+    _compensate = None
     _feed = None
     _store = None
+
+    _clone = False
+    _qcheck = 0.0
 
     _tmoffset = datetime.timedelta()
 
@@ -150,9 +162,9 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
     resampling = 0
     replaying = 0
 
-    def _start(self):
-        self.start()
+    _started = False
 
+    def _start_finish(self):
         # A live feed (for example) may have learnt something about the
         # timezones after the start and that's why the date/time related
         # parameters are converted at this late stage
@@ -179,17 +191,54 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
         self.sessionstart = time2num(self.p.sessionstart)
         self.sessionend = time2num(self.p.sessionend)
 
+        self._calendar = cal = self.p.calendar
+        if cal is None:
+            self._calendar = self._env._tradingcal
+        elif isinstance(cal, string_types):
+            self._calendar = PandasMarketCalendar(calendar=cal)
+
+        self._started = True
+
+    def _start(self):
+        self.start()
+
+        if not self._started:
+            self._start_finish()
+
     def _timeoffset(self):
         return self._tmoffset
 
+    def _getnexteos(self):
+        '''Returns the next eos using a trading calendar if available'''
+        if not len(self):
+            return datetime.datetime.min, 0.0
+
+        dt = self.lines.datetime[0]
+        dtime = num2date(dt)
+        if self._calendar is None:
+            nexteos = datetime.datetime.combine(dtime, self.p.sessionend)
+            nextdteos = self.date2num(nexteos)  # locl'ed -> utc-like
+            nexteos = num2date(nextdteos)  # utc
+            while dtime > nexteos:
+                nexteos += datetime.timedelta(days=1)  # already utc-like
+
+            nextdteos = date2num(nexteos)  # -> utc-like
+
+        else:
+            # returns times in utc
+            _, nexteos = self._calendar.schedule(dtime, self._tz)
+            nextdteos = date2num(nexteos)  # nextos is already utc
+
+        return nexteos, nextdteos
+
     def _gettzinput(self):
         '''Can be overriden by classes to return a timezone for input'''
-        return self.p.tzinput
+        return tzparse(self.p.tzinput)
 
     def _gettz(self):
         '''To be overriden by subclasses which may auto-calculate the
         timezone'''
-        return bt.utils.date.Localizer(self.p.tz)
+        return tzparse(self.p.tz)
 
     def date2num(self, dt):
         if self._tz is not None:
@@ -202,6 +251,16 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
             return num2date(self.lines.datetime[0], tz or self._tz, naive)
 
         return num2date(dt, tz or self._tz, naive)
+
+    def haslivedata(self):
+        return False  # must be overriden for those that can
+
+    def do_qcheck(self, onoff, qlapse):
+        # if onoff is True the data will wait p.qcheck for incoming live data
+        # on its queue.
+        qwait = self.p.qcheck if onoff else 0.0
+        qwait = max(0.0, qwait - qlapse)
+        self._qcheck = qwait
 
     def islive(self):
         '''If this returns True, ``Cerebro`` will deactivate ``preload`` and
@@ -256,7 +315,7 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
 
     def setenvironment(self, env):
         '''Keep a reference to the environment'''
-        self._env = self
+        self._env = env
 
     def getenvironment(self):
         return self._env
@@ -275,6 +334,12 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
 
         else:
             self._filters.append((p, args, kwargs))
+
+    def compensate(self, other):
+        '''Call it to let the broker know that actions on this asset will
+        compensate open positions in another'''
+
+        self._compensate = other
 
     def _tick_nullify(self):
         # These are the updating prices in case the new bar is "updated"
@@ -476,13 +541,16 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
         else:
             self._barstash.append(bar)
 
-    def _save2stack(self, erase=False, force=False):
+    def _save2stack(self, erase=False, force=False, stash=False):
         '''Saves current bar to the bar stack for later retrieval
 
         Parameter ``erase`` determines removal from the data stream
         '''
         bar = [line[0] for line in self.itersize()]
-        self._barstack.append(bar)
+        if not stash:
+            self._barstack.append(bar)
+        else:
+            self._barstash.append(bar)
 
         if erase:  # remove bar if requested
             self.backwards(force=force)
@@ -564,11 +632,12 @@ class FeedBase(with_metaclass(metabase.MetaParams, object)):
 
 class MetaCSVDataBase(DataBase.__class__):
     def dopostinit(cls, _obj, *args, **kwargs):
+        # Before going to the base class to make sure it overrides the default
+        if not _obj.p.name and not _obj._name:
+            _obj._name, _ = os.path.splitext(os.path.basename(_obj.p.dataname))
+
         _obj, args, kwargs = \
             super(MetaCSVDataBase, cls).dopostinit(_obj, *args, **kwargs)
-
-        if not _obj._name:
-            _obj._name, _ = os.path.splitext(os.path.basename(_obj.p.dataname))
 
         return _obj, args, kwargs
 
@@ -637,6 +706,20 @@ class CSVDataBase(with_metaclass(MetaCSVDataBase, DataBase)):
         linetokens = line.split(self.separator)
         return self._loadline(linetokens)
 
+    def _getnextline(self):
+        if self.f is None:
+            return None
+
+        # Let an exception propagate to let the caller know
+        line = self.f.readline()
+
+        if not line:
+            return None
+
+        line = line.rstrip('\n')
+        linetokens = line.split(self.separator)
+        return linetokens
+
 
 class CSVFeedBase(FeedBase):
     params = (('basepath', ''),) + CSVDataBase.params._gettuple()
@@ -647,6 +730,7 @@ class CSVFeedBase(FeedBase):
 
 
 class DataClone(AbstractDataBase):
+    _clone = True
 
     def __init__(self):
         self.data = self.p.dataname
@@ -665,6 +749,8 @@ class DataClone(AbstractDataBase):
         # Copy tz infos
         self._tz = self.data._tz
         self.lines.datetime._settz(self._tz)
+
+        self._calendar = self.data._calendar
 
         # input has already been converted by guest data
         self._tzinput = None  # no need to further converr

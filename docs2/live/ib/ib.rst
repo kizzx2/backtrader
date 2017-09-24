@@ -116,7 +116,7 @@ A *Store* is a concept which covers the following functions:
 
   - Providing access to getter *data* feed instances
 
-    - ``IBStore.getedata(*args, **kwargs)``
+    - ``IBStore.getdata(*args, **kwargs)``
 
       In this case many of the ``**kwargs`` are common to data feeds like
       ``dataname``, ``fromdate``, ``todate``, ``sessionstart``, ``sessionend``,
@@ -220,7 +220,7 @@ Data Contract Check
 
 During the start phase, the *data* feed will try to download the details of the
 specified contract (see the reference for how to specify it). If no such
-contrac is found or multiple matches are found, the data will refuse to carry
+contract is found or multiple matches are found, the data will refuse to carry
 on and will notify it to the system. Some examples.
 
 Simple but unambiguous contract specification::
@@ -307,12 +307,12 @@ Data TimeFrames and Compressions
 ================================
 
 Data feeds in the *backtrader* ecosystem, support the ``timeframe`` and
-``compression`` parameters during creation for informational purposes. These
+``compression`` parameters during creation. These
 parameters are also accessible as attributes with ``data._timeframe`` and
 ``data._compression``
 
-The significance of *timeframe/compression* combinations was useful when
-passing the data to a ``cerebro`` instance via ``resampledata`` or
+The significance of *timeframe/compression* combinations has a specific purpose
+whenpassing the data to a ``cerebro`` instance via ``resampledata`` or
 ``replaydata``, to let the internal resampler/replayer objects to understand
 what the intended target is.  ``._timeframe`` and ``._compression`` will be
 overwritten in the data when resampled/replayed.
@@ -602,7 +602,7 @@ strategy will not work as usual because of the initial offset
 Trading with it
 ===============
 
-There is no change with regards to the standar usage. Just use the methods
+There is no change with regards to the standard usage. Just use the methods
 available in the strategy (see the ``Strategy`` reference for a full
 explanation)
 

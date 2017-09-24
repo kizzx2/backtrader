@@ -53,7 +53,7 @@ master_doc = 'index'
 
 # General information about the project.
 project = u'backtrader'
-copyright = u'2015, 2016 Daniel Rodriguez'
+copyright = u'2015, 2016, 2017 Daniel Rodriguez'
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
@@ -180,7 +180,7 @@ html_theme_options = {
 
     # Fix navigation bar to top of page?
     # Values: "true" (default) or "false"
-    'navbar_fixed_top': "true",
+    'navbar_fixed_top': "false",
 
     # Location of link to source.
     # Options are "nav" (default), "footer" or anything else to exclude.

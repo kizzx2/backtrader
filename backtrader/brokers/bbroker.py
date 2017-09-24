@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -22,11 +22,13 @@ from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
 import collections
+import datetime
 
 import backtrader as bt
 from backtrader.comminfo import CommInfoBase
 from backtrader.order import Order, BuyOrder, SellOrder
 from backtrader.position import Position
+from backtrader.utils.py3 import string_types, integer_types
 
 __all__ = ['BackBroker', 'BrokerBack']
 
@@ -189,6 +191,13 @@ class BackBroker(bt.BrokerBase):
            is *closed* and any order should first be matched against the prices
            in the next bar
 
+        - ``coo`` (default: ``False``)
+
+          *Cheat-On-Open* Setting this to ``True`` with ``set_coo`` enables
+           matching a ``Market`` order to the opening price, by for example
+           using a timer with ``cheat`` set to ``True``, because such a timer
+           gets executed before the broker has evaluated
+
         - ``int2pnl`` (default: ``True``)
 
           Assign generated interest (if any) to the profit and loss of
@@ -204,6 +213,20 @@ class BackBroker(bt.BrokerBase):
 
           If ``False`` then the cash will be deducted as operation cost and the
           calculated value will be positive to end up with the same amount
+
+        - ``fundstartval`` (default: ``100.0``)
+
+          This parameter controls the start value for measuring the performance
+          in a fund-like way, i.e.: cash can be added and deducted increasing
+          the amount of shares. Performance is not measured using the net
+          asset value of the porftoflio but using the value of the fund
+
+        - ``fundmode`` (default: ``False``)
+
+          If this is set to ``True`` analyzers like ``TimeReturn`` can
+          automatically calculate returns based on the fund value and not on
+          the total net asset value
+
     '''
     params = (
         ('cash', 10000.0),
@@ -218,25 +241,51 @@ class BackBroker(bt.BrokerBase):
         ('slip_limit', True),
         ('slip_out', False),
         ('coc', False),
+        ('coo', False),
         ('int2pnl', True),
         ('shortcash', True),
+        ('fundstartval', 100.0),
+        ('fundmode', False),
     )
+
+    def __init__(self):
+        super(BackBroker, self).__init__()
+        self._userhist = []
+        self._fundhist = []
+        # share_value, net asset value
+        self._fhistlast = [float('NaN'), float('NaN')]
 
     def init(self):
         super(BackBroker, self).init()
         self.startingcash = self.cash = self.p.cash
         self._value = self.cash
         self._valuemkt = 0.0  # no open position
+
+        self._valuelever = 0.0  # no open position
+        self._valuemktlever = 0.0  # no open position
+
+        self._leverage = 1.0  # initially nothing is open
         self._unrealized = 0.0  # no open position
 
         self.orders = list()  # will only be appending
         self.pending = collections.deque()  # popleft and append(right)
+        self._toactivate = collections.deque()  # to activate in next cycle
 
         self.positions = collections.defaultdict(Position)
         self.d_credit = collections.defaultdict(float)  # credit per data
         self.notifs = collections.deque()
 
         self.submitted = collections.deque()
+
+        # to keep dependent orders if needed
+        self._pchildren = collections.defaultdict(collections.deque)
+
+        self._ocos = dict()
+        self._ocol = collections.defaultdict(list)
+
+        self._fundval = self.p.fundstartval
+        self._fundshares = self.p.cash / self._fundval
+        self._cash_addition = collections.deque()
 
     def get_notification(self):
         try:
@@ -246,6 +295,25 @@ class BackBroker(bt.BrokerBase):
 
         return None
 
+    def set_fundmode(self, fundmode, fundstartval=None):
+        '''Set the actual fundmode (True or False)
+
+        If the argument fundstartval is not ``None``, it will used
+        '''
+        self.p.fundmode = fundmode
+        if fundstartval is not None:
+            self.set_fundstartval(fundstartval)
+
+    def get_fundmode(self):
+        '''Returns the actual fundmode (True or False)'''
+        return self.p.fundmode
+
+    fundmode = property(get_fundmode, set_fundmode)
+
+    def set_fundstartval(self, fundstartval):
+        '''Set the starting value of the fund-like performance tracker'''
+        self.p.fundstartval = fundstartval
+
     def set_int2pnl(self, int2pnl):
         '''Configure assignment of interest to profit and loss'''
         self.p.int2pnl = int2pnl
@@ -253,6 +321,10 @@ class BackBroker(bt.BrokerBase):
     def set_coc(self, coc):
         '''Configure the Cheat-On-Close method to buy the close on order bar'''
         self.p.coc = coc
+
+    def set_coo(self, coo):
+        '''Configure the Cheat-On-Open method to buy the close on order bar'''
+        self.p.coo = coo
 
     def set_shortcash(self, shortcash):
         '''Configure the shortcash parameters'''
@@ -307,7 +379,23 @@ class BackBroker(bt.BrokerBase):
 
     setcash = set_cash
 
-    def cancel(self, order):
+    def add_cash(self, cash):
+        '''Add/Remove cash to the system (use a negative value to remove)'''
+        self._cash_addition.append(cash)
+
+    def get_fundshares(self):
+        '''Returns the current number of shares in the fund-like mode'''
+        return self._fundshares
+
+    fundshares = property(get_fundshares)
+
+    def get_fundvalue(self):
+        '''Returns the Fund-like share value'''
+        return self._fundval
+
+    fundvalue = property(get_fundvalue)
+
+    def cancel(self, order, bracket=False):
         try:
             self.pending.remove(order)
         except ValueError:
@@ -316,23 +404,37 @@ class BackBroker(bt.BrokerBase):
 
         order.cancel()
         self.notify(order)
+        self._ococheck(order)
+        if not bracket:
+            self._bracketize(order, cancel=True)
         return True
 
-    def get_value(self, datas=None, mkt=False):
+    def get_value(self, datas=None, mkt=False, lever=False):
         '''Returns the portfolio value of the given datas (if datas is ``None``, then
         the total portfolio value will be returned (alias: ``getvalue``)
         '''
         if datas is None:
             if mkt:
-                return self._valuemkt
+                return self._valuemkt if not lever else self._valuemktlever
 
-            return self._value
+            return self._value if not lever else self._valuelever
 
-        return self._get_value(datas=datas)
+        return self._get_value(datas=datas, lever=lever)
 
-    def _get_value(self, datas=None):
+    getvalue = get_value
+
+    def get_value_lever(self, datas=None, mkt=False):
+        return self.get_value(datas=datas, mkt=mkt)
+
+    def _get_value(self, datas=None, lever=False):
         pos_value = 0.0
+        pos_value_unlever = 0.0
         unrealized = 0.0
+
+        while self._cash_addition:
+            c = self._cash_addition.popleft()
+            self._fundshares += c / self._fundval
+            self.cash += c
 
         for data in datas or self.positions:
             comminfo = self.getcommissioninfo(data)
@@ -343,23 +445,56 @@ class BackBroker(bt.BrokerBase):
             else:
                 dvalue = comminfo.getvaluesize(position.size, data.close[0])
 
+            dunrealized = comminfo.profitandloss(position.size, position.price,
+                                                 data.close[0])
             if datas and len(datas) == 1:
+                if lever and dvalue > 0:
+                    dvalue -= dunrealized
+                    return (dvalue / comminfo.get_leverage()) + dunrealized
                 return dvalue  # raw data value requested, short selling is neg
 
             if not self.p.shortcash:
                 dvalue = abs(dvalue)  # short selling adds value in this case
 
             pos_value += dvalue
-            unrealized += comminfo.profitandloss(position.size, position.price,
-                                                 data.close[0])
+            unrealized += dunrealized
 
-        self._value = self.cash + pos_value
-        self._valuemkt = pos_value
+            if dvalue > 0:  # long position - unlever
+                dvalue -= dunrealized
+                pos_value_unlever += (dvalue / comminfo.get_leverage())
+                pos_value_unlever += dunrealized
+            else:
+                pos_value_unlever += dvalue
+
+        if not self._fundhist:
+            self._value = v = self.cash + pos_value_unlever
+            self._fundval = self._value / self._fundshares  # update fundvalue
+        else:
+            # Try to fetch a value
+            fval, fvalue = self._process_fund_history()
+
+            self._value = fvalue
+            self.cash = fvalue - pos_value_unlever
+            self._fundval = fval
+            self._fundshares = fvalue / fval
+            lev = pos_value / (pos_value_unlever or 1.0)
+
+            # update the calculated values above to the historical values
+            pos_value_unlever = fvalue
+            pos_value = fvalue * lev
+
+        self._valuemkt = pos_value_unlever
+
+        self._valuelever = self.cash + pos_value
+        self._valuemktlever = pos_value
+
+        self._leverage = pos_value / (pos_value_unlever or 1.0)
         self._unrealized = unrealized
 
-        return self._value
+        return self._value if not lever else self._valuelever
 
-    getvalue = get_value
+    def get_leverage(self):
+        return self._leverage
 
     def get_orders_open(self, safe=False):
         '''Returns an iterable with the orders which are still open (either not
@@ -377,6 +512,8 @@ class BackBroker(bt.BrokerBase):
         return os
 
     def getposition(self, data):
+        '''Returns the current position status (a ``Position`` instance) for
+        the given ``data``'''
         return self.positions[data]
 
     def orderstatus(self, order):
@@ -387,8 +524,35 @@ class BackBroker(bt.BrokerBase):
 
         return o.status
 
-    def submit(self, order):
-        if self.p.checksubmit:
+    def _take_children(self, order):
+        oref = order.ref
+        pref = getattr(order.parent, 'ref', oref)  # parent ref or self
+
+        if oref != pref:
+            if pref not in self._pchildren:
+                order.reject()  # parent not there - may have been rejected
+                self.notify(order)  # reject child, notify
+                return None
+
+        return pref
+
+    def submit(self, order, check=True):
+        pref = self._take_children(order)
+        if pref is None:  # order has not been taken
+            return order
+
+        pc = self._pchildren[pref]
+        pc.append(order)  # store in parent/children queue
+
+        if order.transmit:  # if single order, sent and queue cleared
+            # if parent-child, the parent will be sent, the other kept
+            rets = [self.transmit(x, check=check) for x in pc]
+            return rets[-1]  # last one is the one triggering transmission
+
+        return order
+
+    def transmit(self, order, check=True):
+        if check and self.p.checksubmit:
             order.submit()
             self.submitted.append(order)
             self.orders.append(order)
@@ -404,6 +568,10 @@ class BackBroker(bt.BrokerBase):
 
         while self.submitted:
             order = self.submitted.popleft()
+
+            if self._take_children(order) is None:  # children not taken
+                continue
+
             comminfo = self.getcommissioninfo(order.data)
 
             position = positions.setdefault(
@@ -418,6 +586,8 @@ class BackBroker(bt.BrokerBase):
 
             order.margin()
             self.notify(order)
+            self._ococheck(order)
+            self._bracketize(order, cancel=True)
 
     def submit_accept(self, order):
         order.pannotated = None
@@ -426,31 +596,100 @@ class BackBroker(bt.BrokerBase):
         self.pending.append(order)
         self.notify(order)
 
+    def _bracketize(self, order, cancel=False):
+        oref = order.ref
+        pref = getattr(order.parent, 'ref', oref)
+        parent = oref == pref
+
+        pc = self._pchildren[pref]  # defdict - guaranteed
+        if cancel or not parent:  # cancel left or child exec -> cancel other
+            while pc:
+                self.cancel(pc.popleft(), bracket=True)  # idempotent
+
+            del self._pchildren[pref]  # defdict guaranteed
+
+        else:  # not cancel -> parent exec'd
+            pc.popleft()  # remove parent
+            for o in pc:  # activate childnre
+                self._toactivate.append(o)
+
+    def _ococheck(self, order):
+        # ocoref = self._ocos[order.ref] or order.ref  # a parent or self
+        parentref = self._ocos[order.ref]
+        ocoref = self._ocos.get(parentref, None)
+        ocol = self._ocol.pop(ocoref, None)
+        if ocol:
+            for i in range(len(self.pending) - 1, -1, -1):
+                o = self.pending[i]
+                if o is not None and o.ref in ocol:
+                    del self.pending[i]
+                    o.cancel()
+                    self.notify(o)
+
+    def _ocoize(self, order, oco):
+        oref = order.ref
+        if oco is None:
+            self._ocos[oref] = oref  # current order is parent
+            self._ocol[oref].append(oref)  # create ocogroup
+        else:
+            ocoref = self._ocos[oco.ref]  # ref to group leader
+            self._ocos[oref] = ocoref  # ref to group leader
+            self._ocol[ocoref].append(oref)  # add to group
+
+    def add_order_history(self, orders, notify=True):
+        oiter = iter(orders)
+        o = next(oiter, None)
+        self._userhist.append([o, oiter, notify])
+
+    def set_fund_history(self, fund):
+        # iterable with the following pro item
+        # [datetime, share_value, net asset value]
+        fiter = iter(fund)
+        f = list(next(fiter))  # must not be empty
+        self._fundhist = [f, fiter]
+        # self._fhistlast = f[1:]
+
+        self.set_cash(float(f[2]))
+
     def buy(self, owner, data,
             size, price=None, plimit=None,
-            exectype=None, valid=None, tradeid=0,
+            exectype=None, valid=None, tradeid=0, oco=None,
+            trailamount=None, trailpercent=None,
+            parent=None, transmit=True,
+            histnotify=False, _checksubmit=True,
             **kwargs):
 
         order = BuyOrder(owner=owner, data=data,
                          size=size, price=price, pricelimit=plimit,
-                         exectype=exectype, valid=valid, tradeid=tradeid)
+                         exectype=exectype, valid=valid, tradeid=tradeid,
+                         trailamount=trailamount, trailpercent=trailpercent,
+                         parent=parent, transmit=transmit,
+                         histnotify=histnotify)
 
         order.addinfo(**kwargs)
+        self._ocoize(order, oco)
 
-        return self.submit(order)
+        return self.submit(order, check=_checksubmit)
 
     def sell(self, owner, data,
              size, price=None, plimit=None,
-             exectype=None, valid=None, tradeid=0,
+             exectype=None, valid=None, tradeid=0, oco=None,
+             trailamount=None, trailpercent=None,
+             parent=None, transmit=True,
+             histnotify=False, _checksubmit=True,
              **kwargs):
 
         order = SellOrder(owner=owner, data=data,
                           size=size, price=price, pricelimit=plimit,
-                          exectype=exectype, valid=valid, tradeid=tradeid)
+                          exectype=exectype, valid=valid, tradeid=tradeid,
+                          trailamount=trailamount, trailpercent=trailpercent,
+                          parent=parent, transmit=transmit,
+                          histnotify=histnotify)
 
         order.addinfo(**kwargs)
+        self._ocoize(order, oco)
 
-        return self.submit(order)
+        return self.submit(order, check=_checksubmit)
 
     def _execute(self, order, ago=None, price=None, cash=None, position=None,
                  dtcoc=None):
@@ -470,10 +709,18 @@ class BackBroker(bt.BrokerBase):
         # Get comminfo object for the data
         comminfo = self.getcommissioninfo(order.data)
 
+        # Check if something has to be compensated
+        if order.data._compensate is not None:
+            data = order.data._compensate
+            cinfocomp = self.getcommissioninfo(data)  # for actual commission
+        else:
+            data = order.data
+            cinfocomp = comminfo
+
         # Adjust position with operation size
         if ago is not None:
             # Real execution with date
-            position = self.positions[order.data]
+            position = self.positions[data]
             pprice_orig = position.price
 
             psize, pprice, opened, closed = position.pseudoupdate(size, price)
@@ -495,7 +742,11 @@ class BackBroker(bt.BrokerBase):
             else:
                 closedvalue = comminfo.getoperationcost(closed, pprice_orig)
 
-            cash += closedvalue + pnl * comminfo.stocklike
+            closecash = closedvalue
+            if closedvalue > 0:  # long position closed
+                closecash /= comminfo.get_leverage()  # inc cash with lever
+
+            cash += closecash + pnl * comminfo.stocklike
             # Calculate and substract commission
             closedcomm = comminfo.getcommission(closed, price)
             cash -= closedcomm
@@ -519,9 +770,13 @@ class BackBroker(bt.BrokerBase):
             else:
                 openedvalue = comminfo.getoperationcost(opened, price)
 
-            cash -= openedvalue  # original behavior
+            opencash = openedvalue
+            if openedvalue > 0:  # long position being opened
+                opencash /= comminfo.get_leverage()  # dec cash with level
 
-            openedcomm = comminfo.getcommission(opened, price)
+            cash -= opencash  # original behavior
+
+            openedcomm = cinfocomp.getcommission(opened, price)
             cash -= openedcomm
 
             if cash < 0.0:
@@ -561,13 +816,13 @@ class BackBroker(bt.BrokerBase):
             comminfo.confirmexec(execsize, price)
 
             # do a real position update if something was executed
-            position.update(execsize, price, order.data.datetime.datetime())
+            position.update(execsize, price, data.datetime.datetime())
 
             if closed and self.p.int2pnl:  # Assign accumulated interest data
-                closedcomm += self.d_credit.pop(order.data, 0.0)
+                closedcomm += self.d_credit.pop(data, 0.0)
 
             # Execute and notify the order
-            order.execute(dtcoc or order.data.datetime[ago],
+            order.execute(dtcoc or data.datetime[ago],
                           execsize, price,
                           closed, closedvalue, closedcomm,
                           opened, openedvalue, openedcomm,
@@ -577,22 +832,28 @@ class BackBroker(bt.BrokerBase):
             order.addcomminfo(comminfo)
 
             self.notify(order)
+            self._ococheck(order)
 
         if popened and not opened:
             # opened was not executed - not enough cash
             order.margin()
             self.notify(order)
+            self._ococheck(order)
+            self._bracketize(order, cancel=True)
 
     def notify(self, order):
         self.notifs.append(order.clone())
 
+    def _try_exec_historical(self, order):
+        self._execute(order, ago=0, price=order.created.price)
+
     def _try_exec_market(self, order, popen, phigh, plow):
         ago = 0
-        if self.p.coc:
+        if self.p.coc and order.info.get('coc', True):
             dtcoc = order.created.dt
             exprice = order.created.pclose
         else:
-            if order.data.datetime[0] <= order.created.dt:
+            if not self.p.coo and order.data.datetime[0] <= order.created.dt:
                 return    # can only execute after creation time
 
             dtcoc = None
@@ -654,7 +915,7 @@ class BackBroker(bt.BrokerBase):
                 # day high above req price ... match limit price
                 self._execute(order, ago=0, price=plimit)
 
-    def _try_exec_stop(self, order, popen, phigh, plow, pcreated):
+    def _try_exec_stop(self, order, popen, phigh, plow, pcreated, pclose):
         if order.isbuy():
             if popen >= pcreated:
                 # price penetrated with an open gap - use open
@@ -674,6 +935,10 @@ class BackBroker(bt.BrokerBase):
                 # price penetrated during the session - use trigger price
                 p = self._slip_down(plow, pcreated)
                 self._execute(order, ago=0, price=p)
+
+        # not (completely) executed and trailing stop
+        if order.alive() and order.exectype == Order.StopTrail:
+            order.trailadjust(pclose)
 
     def _try_exec_stoplimit(self, order,
                             popen, phigh, plow, pclose,
@@ -718,6 +983,10 @@ class BackBroker(bt.BrokerBase):
                     if plimit <= pcreated:
                         p = self._slip_down(plow, pcreated, lim=True)
                         self._execute(order, ago=0, price=p)
+
+        # not (completely) executed and trailing stop
+        if order.alive() and order.exectype == Order.StopTrailLimit:
+            order.trailadjust(pclose)
 
     def _slip_up(self, pmax, price, doslip=True, lim=False):
         if not doslip:
@@ -768,10 +1037,18 @@ class BackBroker(bt.BrokerBase):
     def _try_exec(self, order):
         data = order.data
 
-        popen = data.tick_open or data.open[0]
-        phigh = data.tick_high or data.high[0]
-        plow = data.tick_low or data.low[0]
-        pclose = data.tick_close or data.close[0]
+        popen = getattr(data, 'tick_open', None)
+        if popen is None:
+            popen = data.open[0]
+        phigh = getattr(data, 'tick_high', None)
+        if phigh is None:
+            phigh = data.high[0]
+        plow = getattr(data, 'tick_low', None)
+        if plow is None:
+            plow = data.low[0]
+        pclose = getattr(data, 'tick_close', None)
+        if pclose is None:
+            pclose = data.close[0]
 
         pcreated = order.created.price
         plimit = order.created.pricelimit
@@ -785,18 +1062,118 @@ class BackBroker(bt.BrokerBase):
         elif order.exectype == Order.Limit:
             self._try_exec_limit(order, popen, phigh, plow, pcreated)
 
-        elif order.exectype == Order.StopLimit and order.triggered:
+        elif (order.triggered and
+              order.exectype in [Order.StopLimit, Order.StopTrailLimit]):
             self._try_exec_limit(order, popen, phigh, plow, plimit)
 
-        elif order.exectype == Order.Stop:
-            self._try_exec_stop(order, popen, phigh, plow, pcreated)
+        elif order.exectype in [Order.Stop, Order.StopTrail]:
+            self._try_exec_stop(order, popen, phigh, plow, pcreated, pclose)
 
-        elif order.exectype == Order.StopLimit:
+        elif order.exectype in [Order.StopLimit, Order.StopTrailLimit]:
             self._try_exec_stoplimit(order,
                                      popen, phigh, plow, pclose,
                                      pcreated, plimit)
 
+        elif order.exectype == Order.Historical:
+            self._try_exec_historical(order)
+
+    def _process_fund_history(self):
+        fhist = self._fundhist  # [last element, iterator]
+        f, funds = fhist
+        if not f:
+            return self._fhistlast
+
+        dt = f[0]  # date/datetime instance
+        if isinstance(dt, string_types):
+            dtfmt = '%Y-%m-%d'
+            if 'T' in dt:
+                dtfmt += 'T%H:%M:%S'
+                if '.' in dt:
+                    dtfmt += '.%f'
+            dt = datetime.datetime.strptime(dt, dtfmt)
+            f[0] = dt  # update value
+
+        elif isinstance(dt, datetime.datetime):
+            pass
+        elif isinstance(dt, datetime.date):
+            dt = datetime.datetime(year=dt.year, month=dt.month, day=dt.day)
+            f[0] = dt  # Update the value
+
+        # Synchronization with the strategy is not possible because the broker
+        # is called before the strategy advances. The 2 lines below would do it
+        # if possible
+        # st0 = self.cerebro.runningstrats[0]
+        # if dt <= st0.datetime.datetime():
+        if dt <= self.cerebro._dtmaster:
+            self._fhistlast = f[1:]
+            fhist[0] = list(next(funds, []))
+
+        return self._fhistlast
+
+    def _process_order_history(self):
+        for uhist in self._userhist:
+            uhorder, uhorders, uhnotify = uhist
+            while uhorder is not None:
+                uhorder = list(uhorder)  # to support assignment (if tuple)
+                try:
+                    dataidx = uhorder[3]  # 2nd field
+                except IndexError:
+                    dataidx = None  # Field not present, use default
+
+                if dataidx is None:
+                    d = self.cerebro.datas[0]
+                elif isinstance(dataidx, integer_types):
+                    d = self.cerebro.datas[dataidx]
+                else:  # assume string
+                    d = self.cerebro.datasbyname[dataidx]
+
+                if not len(d):
+                    break  # may start later as oter data feeds
+
+                dt = uhorder[0]  # date/datetime instance
+                if isinstance(dt, string_types):
+                    dtfmt = '%Y-%m-%d'
+                    if 'T' in dt:
+                        dtfmt += 'T%H:%M:%S'
+                        if '.' in dt:
+                            dtfmt += '.%f'
+                    dt = datetime.datetime.strptime(dt, dtfmt)
+                    uhorder[0] = dt
+                elif isinstance(dt, datetime.datetime):
+                    pass
+                elif isinstance(dt, datetime.date):
+                    dt = datetime.datetime(year=dt.year,
+                                           month=dt.month,
+                                           day=dt.day)
+                    uhorder[0] = dt
+
+                if dt > d.datetime.datetime():
+                    break  # cannot execute yet 1st in queue, stop processing
+
+                size = uhorder[1]
+                price = uhorder[2]
+                owner = self.cerebro.runningstrats[0]
+                if size > 0:
+                    o = self.buy(owner=owner, data=d,
+                                 size=size, price=price,
+                                 exectype=Order.Historical,
+                                 histnotify=uhnotify,
+                                 _checksubmit=False)
+
+                elif size < 0:
+                    o = self.sell(owner=owner, data=d,
+                                  size=abs(size), price=price,
+                                  exectype=Order.Historical,
+                                  histnotify=uhnotify,
+                                  _checksubmit=False)
+
+                # update to next potential order
+                uhist[0] = uhorder = next(uhorders, None)
+
     def next(self):
+        while self._toactivate:
+            self._toactivate.popleft().activate()
+
         if self.p.checksubmit:
             self.check_submitted()
 
@@ -813,19 +1190,31 @@ class BackBroker(bt.BrokerBase):
 
         self.cash -= credit
 
-        # Iterate once over all elements of the pending queue
-        for i in range(len(self.pending)):
+        self._process_order_history()
 
+        # Iterate once over all elements of the pending queue
+        self.pending.append(None)
+        while True:
             order = self.pending.popleft()
+            if order is None:
+                break
 
             if order.expire():
                 self.notify(order)
-                continue
+                self._ococheck(order)
+                self._bracketize(order, cancel=True)
 
-            self._try_exec(order)
+            elif not order.active():
+                self.pending.append(order)  # cannot yet be processed
 
-            if order.alive():
-                self.pending.append(order)
+            else:
+                self._try_exec(order)
+                if order.alive():
+                    self.pending.append(order)
+
+                elif order.status == Order.Completed:
+                    # a bracket parent order may have been executed
+                    self._bracketize(order)
 
         # Operations have been executed ... adjust cash end of bar
         for data, pos in self.positions.items():

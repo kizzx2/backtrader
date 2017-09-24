@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -64,6 +64,15 @@ class Returns(TimeFrameAnalyzerBase):
           - ``months: 12``
           - ``years: 1``
 
+      - ``fund`` (default: ``None``)
+
+        If ``None`` the actual mode of the broker (fundmode - True/False) will
+        be autodetected to decide if the returns are based on the total net
+        asset value or on the fund value. See ``set_fundmode`` in the broker
+        documentation
+
+        Set it to ``True`` or ``False`` for a specific behavior
+
     Methods:
 
       - get_analysis
@@ -82,6 +91,7 @@ class Returns(TimeFrameAnalyzerBase):
 
     params = (
         ('tann', None),
+        ('fund', None),
     )
 
     _TANN = {
@@ -93,13 +103,25 @@ class Returns(TimeFrameAnalyzerBase):
 
     def start(self):
         super(Returns, self).start()
-        self._value_start = self.strategy.broker.getvalue()
+        if self.p.fund is None:
+            self._fundmode = self.strategy.broker.fundmode
+        else:
+            self._fundmode = self.p.fund
+
+        if not self._fundmode:
+            self._value_start = self.strategy.broker.getvalue()
+        else:
+            self._value_start = self.strategy.broker.fundvalue
+
         self._tcount = 0
 
     def stop(self):
         super(Returns, self).stop()
 
-        self._value_end = self.strategy.broker.getvalue()
+        if not self._fundmode:
+            self._value_end = self.strategy.broker.getvalue()
+        else:
+            self._value_end = self.strategy.broker.fundvalue
 
         # Compound return
         self.rets['rtot'] = rtot = (

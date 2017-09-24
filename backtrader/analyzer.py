@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -122,9 +122,9 @@ class Analyzer(with_metaclass(MetaAnalyzer, object)):
       - ``prenext`` / ``nextstart`` / ``next`` family of methods that follow
         the calls made to the same methods in the strategy
 
-      - ``notify_trade`` / ``notify_order`` / ``notify_cashvalue`` which
-        receive the same notifications as the equivalent methods of the
-        strategy
+      - ``notify_trade`` / ``notify_order`` / ``notify_cashvalue`` /
+        ``notify_fund`` which receive the same notifications as the equivalent
+        methods of the strategy
 
     The mode of operation is open and no pattern is preferred. As such the
     analysis can be generated with the ``next`` calls, at the end of operations
@@ -156,6 +156,12 @@ class Analyzer(with_metaclass(MetaAnalyzer, object)):
             child._notify_cashvalue(cash, value)
 
         self.notify_cashvalue(cash, value)
+
+    def _notify_fund(self, cash, value, fundvalue, shares):
+        for child in self._children:
+            child._notify_fund(cash, value, fundvalue, shares)
+
+        self.notify_fund(cash, value, fundvalue, shares)
 
     def _notify_trade(self, trade):
         for child in self._children:
@@ -195,6 +201,10 @@ class Analyzer(with_metaclass(MetaAnalyzer, object)):
 
     def notify_cashvalue(self, cash, value):
         '''Receives the cash/value notification before each next cycle'''
+        pass
+
+    def notify_fund(self, cash, value, fundvalue, shares):
+        '''Receives the current cash, value, fundvalue and fund shares'''
         pass
 
     def notify_order(self, order):
@@ -276,24 +286,61 @@ class Analyzer(with_metaclass(MetaAnalyzer, object)):
         pp.pprint(self.get_analysis(), *args, **kwargs)
 
 
-class TimeFrameAnalyzerBase(Analyzer):
+class MetaTimeFrameAnalyzerBase(Analyzer.__class__):
+    def __new__(meta, name, bases, dct):
+        # Hack to support original method name
+        if '_on_dt_over' in dct:
+            dct['on_dt_over'] = dct.pop('_on_dt_over')  # rename method
+
+        return super(MetaTimeFrameAnalyzerBase, meta).__new__(meta, name,
+                                                              bases, dct)
+
+
+class TimeFrameAnalyzerBase(with_metaclass(MetaTimeFrameAnalyzerBase,
+                                           Analyzer)):
     params = (
         ('timeframe', None),
         ('compression', None),
+        ('_doprenext', True),
     )
 
-    def start(self):
-        super(TimeFrameAnalyzerBase, self).start()
+    def _start(self):
+        # Override to add specific attributes
         self.timeframe = self.p.timeframe or self.data._timeframe
         self.compression = self.p.compression or self.data._compression
 
         self.dtcmp, self.dtkey = self._get_dt_cmpkey(datetime.datetime.min)
+        super(TimeFrameAnalyzerBase, self)._start()
 
-    def next(self):
+    def _prenext(self):
+        for child in self._children:
+            child._prenext()
+
         if self._dt_over():
-            self._on_dt_over()
+            self.on_dt_over()
 
-    def _on_dt_over(self):
+        if self.p._doprenext:
+            self.prenext()
+
+    def _nextstart(self):
+        for child in self._children:
+            child._nextstart()
+
+        if self._dt_over() or not self.p._doprenext:  # exec if no prenext
+            self.on_dt_over()
+
+        self.nextstart()
+
+    def _next(self):
+        for child in self._children:
+            child._next()
+
+        if self._dt_over():
+            self.on_dt_over()
+
+        self.next()
+
+    def on_dt_over(self):
         pass
 
     def _dt_over(self):
@@ -304,7 +351,7 @@ class TimeFrameAnalyzerBase(Analyzer):
             dt = self.strategy.datetime.datetime()
             dtcmp, dtkey = self._get_dt_cmpkey(dt)
 
-        if dtcmp > self.dtcmp:
+        if self.dtcmp is None or dtcmp > self.dtcmp:
             self.dtkey, self.dtkey1 = dtkey, self.dtkey
             self.dtcmp, self.dtcmp1 = dtcmp, self.dtcmp
             return True

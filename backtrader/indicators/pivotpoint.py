@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -35,7 +35,7 @@ class PivotPoint(Indicator):
 
       data = btfeeds.ADataFeed(dataname=x, timeframe=bt.TimeFrame.Days)
       cerebro.adddata(data)
-      data1 = cerebro.resampledata(data, timeframe=bt.TimeFrame.Months)
+      cerebro.resampledata(data, timeframe=bt.TimeFrame.Months)
 
     In the ``__init__`` method of the strategy:
 
@@ -80,8 +80,8 @@ class PivotPoint(Indicator):
     def __init__(self):
         o = self.data.open
         h = self.data.high  # current high
-        l = self.data.low  # current high
-        c = self.data.close  # current high
+        l = self.data.low  # current low
+        c = self.data.close  # current close
 
         if self.p.close:
             self.lines.p = p = (h + l + 2.0 * c) / 4.0
@@ -98,6 +98,10 @@ class PivotPoint(Indicator):
 
         super(PivotPoint, self).__init__()  # enable coopertive inheritance
 
+        if self.p._autoplot:
+            self.plotinfo.plot = False  # disable own plotting
+            self()  # Coupler to follow real object
+
 
 class FibonacciPivotPoint(Indicator):
     '''
@@ -112,7 +116,7 @@ class FibonacciPivotPoint(Indicator):
 
       data = btfeeds.ADataFeed(dataname=x, timeframe=bt.TimeFrame.Days)
       cerebro.adddata(data)
-      data1 = cerebro.resampledata(data, timeframe=bt.TimeFrame.Months)
+      cerebro.resampledata(data, timeframe=bt.TimeFrame.Months)
 
     In the ``__init__`` method of the strategy:
 
@@ -180,6 +184,10 @@ class FibonacciPivotPoint(Indicator):
 
         super(FibonacciPivotPoint, self).__init__()
 
+        if self.p._autoplot:
+            self.plotinfo.plot = False  # disable own plotting
+            self()  # Coupler to follow real object
+
 
 class DemarkPivotPoint(Indicator):
     '''
@@ -192,7 +200,7 @@ class DemarkPivotPoint(Indicator):
 
       data = btfeeds.ADataFeed(dataname=x, timeframe=bt.TimeFrame.Days)
       cerebro.adddata(data)
-      data1 = cerebro.resampledata(data, timeframe=bt.TimeFrame.Months)
+      cerebro.resampledata(data, timeframe=bt.TimeFrame.Months)
 
     In the ``__init__`` method of the strategy:
 
@@ -252,3 +260,7 @@ class DemarkPivotPoint(Indicator):
         self.lines.r1 = x / 2.0 - self.data.low
 
         super(DemarkPivotPoint, self).__init__()
+
+        if self.p._autoplot:
+            self.plotinfo.plot = False  # disable own plotting
+            self()  # Coupler to follow real object
